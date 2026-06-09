@@ -1,0 +1,22 @@
+[package]
+name = "eventhub-http-roundrobin"
+version = "0.1.0"
+edition = "2021"
+description = "Produce events to an Azure Event Hub over the HTTP REST API with no partition key, to demonstrate broker-side round-robin partition distribution."
+license = "MIT"
+repository = "https://github.com/j7nw4r/eventhub-http-roundrobin"
+
+[dependencies]
+# Async runtime. "rt-multi-thread" + "macros" gives us #[tokio::main]; "time" for sleep.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+# HTTP client. rustls instead of native OpenSSL so the build has no system TLS dependency.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+# SAS token signing: HMAC-SHA256 over the resource URI + expiry.
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+# Percent-encoding for the resource URI and the base64 signature.
+urlencoding = "2"
+# CLI args (with env fallthrough) and error plumbing.
+clap = { version = "4", features = ["derive", "env"] }
+anyhow = "1"

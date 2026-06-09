@@ -1,0 +1,3 @@
+/target
+# Local secrets: connection string / SAS key live here, never commit them.
+.env
