@@ -13,6 +13,8 @@
 //!   - Send event:   https://learn.microsoft.com/en-us/rest/api/eventhub/send-event
 //!   - SAS token:    https://learn.microsoft.com/en-us/rest/api/eventhub/generate-sas-token
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Context, Result};
@@ -52,8 +54,8 @@ struct Args {
     #[arg(long, env = "EVENTHUB_NAME")]
     event_hub: Option<String>,
 
-    /// Number of events to send.
-    #[arg(long, default_value_t = 30)]
+    /// Number of events to send. 0 (the default) sends continuously until Ctrl-C.
+    #[arg(long, default_value_t = 0)]
     count: u32,
 
     /// Delay between sends, in milliseconds.
@@ -243,16 +245,45 @@ async fn main() -> Result<()> {
     let url = cfg.messages_url();
     let client = reqwest::Client::new();
 
-    println!(
-        "Producing {} event(s) to {} (no partition key -> broker round-robins)\n",
-        args.count,
-        cfg.resource_uri()
-    );
+    let unbounded = args.count == 0;
+    if unbounded {
+        println!(
+            "Producing continuously to {} (no partition key -> broker round-robins). Ctrl-C to stop.\n",
+            cfg.resource_uri()
+        );
+    } else {
+        println!(
+            "Producing {} event(s) to {} (no partition key -> broker round-robins)\n",
+            args.count,
+            cfg.resource_uri()
+        );
+    }
 
-    let mut ok = 0u32;
-    let mut failed = 0u32;
+    // Graceful shutdown. A Ctrl-C flips `stop`; the loop checks it each iteration
+    // (so it works even at --interval-ms 0) and `notify` wakes any in-flight sleep
+    // so shutdown is snappy rather than waiting out the interval.
+    let stop = Arc::new(AtomicBool::new(false));
+    let notify = Arc::new(tokio::sync::Notify::new());
+    {
+        let (stop, notify) = (stop.clone(), notify.clone());
+        tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                stop.store(true, Ordering::SeqCst);
+                notify.notify_waiters();
+            }
+        });
+    }
 
-    for seq in 0..args.count {
+    let mut ok = 0u64;
+    let mut failed = 0u64;
+    let mut total_bytes: u64 = 0; // cumulative accepted payload bytes
+    let mut seq: u64 = 0;
+
+    while !stop.load(Ordering::SeqCst) {
+        if !unbounded && seq >= args.count as u64 {
+            break;
+        }
+
         let sent_at_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis())
@@ -262,6 +293,8 @@ async fn main() -> Result<()> {
         let body = format!(
             r#"{{"seq":{seq},"sentAtMs":{sent_at_ms},"note":"no partition key; expect round-robin"}}"#
         );
+        // Payload bytes only (the JSON body), not HTTP headers or the SAS token.
+        let body_len = body.len() as u64;
 
         match send_one(&client, &url, &auth, body).await {
             // The REST send endpoint returns 201 Created with an empty body and
@@ -269,24 +302,31 @@ async fn main() -> Result<()> {
             // round-robin on the consumer side (see README).
             Ok(status) if status.is_success() => {
                 ok += 1;
-                println!("seq {seq:>4} -> {status}");
+                total_bytes += body_len;
+                println!("seq {seq:>6} -> {status} | +{body_len} B | total {total_bytes} B / {ok} events");
             }
             Ok(status) => {
                 failed += 1;
-                eprintln!("seq {seq:>4} -> {status} (NOT accepted)");
+                eprintln!("seq {seq:>6} -> {status} (NOT accepted)");
             }
             Err(e) => {
                 failed += 1;
-                eprintln!("seq {seq:>4} -> error: {e:#}");
+                eprintln!("seq {seq:>6} -> error: {e:#}");
             }
         }
 
-        if seq + 1 < args.count {
-            tokio::time::sleep(Duration::from_millis(args.interval_ms)).await;
+        seq += 1;
+
+        // Pace between sends, but cut the wait short if Ctrl-C arrived mid-sleep.
+        if args.interval_ms > 0 && !stop.load(Ordering::SeqCst) {
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_millis(args.interval_ms)) => {}
+                _ = notify.notified() => {}
+            }
         }
     }
 
-    println!("\nDone. {ok} accepted, {failed} failed.");
+    println!("\nDone. {ok} accepted, {failed} failed, {total_bytes} bytes delivered.");
     if failed > 0 {
         std::process::exit(1);
     }

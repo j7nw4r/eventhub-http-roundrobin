@@ -58,21 +58,36 @@ export EVENTHUB_SAS_KEY='...'
 
 ## Run
 
+By default it sends **continuously** until you press Ctrl-C, and prints a running
+byte counter so you can watch throughput climb:
+
+```sh
+cargo run --release -- --interval-ms 250
+```
+
+```
+Producing continuously to https://mynamespace.servicebus.windows.net/myhub (no partition key -> broker round-robins). Ctrl-C to stop.
+
+seq      0 -> 201 Created | +80 B | total 80 B / 1 events
+seq      1 -> 201 Created | +80 B | total 160 B / 2 events
+seq      2 -> 201 Created | +80 B | total 240 B / 3 events
+^C
+Done. 3 accepted, 0 failed, 240 bytes delivered.
+```
+
+Each line shows the payload bytes for that event (`+N B`) and the cumulative
+delivered total. The byte count only includes accepted (2xx) events; the per-event
+size grows by a digit or two as `seq` rolls over into longer numbers.
+
+Send a fixed number instead and exit when done with `--count`:
+
 ```sh
 cargo run --release -- --count 30 --interval-ms 250
 ```
 
-```
-Producing 30 event(s) to https://mynamespace.servicebus.windows.net/myhub (no partition key -> broker round-robins)
-
-seq    0 -> 201 Created
-seq    1 -> 201 Created
-...
-Done. 30 accepted, 0 failed.
-```
-
-Each event body carries a `seq` number, the breadcrumb you use to watch the
-round-robin on the consumer side.
+Crank `--interval-ms 0` to send as fast as the HTTP round-trips allow (the byte
+counter will climb quickly). Each event body carries a `seq` number, the breadcrumb
+you use to watch the round-robin on the consumer side.
 
 ## Verify the round-robin
 

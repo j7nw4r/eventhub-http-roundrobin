@@ -7,8 +7,9 @@ license = "MIT"
 repository = "https://github.com/j7nw4r/eventhub-http-roundrobin"
 
 [dependencies]
-# Async runtime. "rt-multi-thread" + "macros" gives us #[tokio::main]; "time" for sleep.
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+# Async runtime. "rt-multi-thread" + "macros" gives us #[tokio::main] and select!;
+# "time" for sleep, "signal" for Ctrl-C, "sync" for Notify-based shutdown wakeups.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal", "sync"] }
 # HTTP client. rustls instead of native OpenSSL so the build has no system TLS dependency.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 # SAS token signing: HMAC-SHA256 over the resource URI + expiry.
